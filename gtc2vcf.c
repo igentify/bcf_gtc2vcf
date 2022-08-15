@@ -65,6 +65,7 @@
 #define FORMAT_THETA (1 << 16)
 #define FORMAT_X (1 << 17)
 #define FORMAT_Y (1 << 18)
+#define USE_ORIGINAL_BAF_LRR (1 << 19) //WRITE ORIGINAL BAF AND LRR VALUES TO THE TARGET VCF WITHOUT NORMALIZING THEM
 
 /****************************************
  * hFILE READING FUNCTIONS              *
@@ -2222,9 +2223,12 @@ static bcf_hdr_t *hdr_init(const faidx_t *fai, int flags) {
         bcf_hdr_append(hdr,
                        "##FORMAT=<ID=IGC,Number=1,Type=Float,Description=\"Illumina GenCall "
                        "Confidence Score\">");
-    if (flags & FORMAT_BAF)
+    if (flags & FORMAT_BAF) {
         bcf_hdr_append(hdr, "##FORMAT=<ID=BAF,Number=1,Type=Float,Description=\"B Allele Frequency\">");
-    if (flags & FORMAT_LRR) bcf_hdr_append(hdr, "##FORMAT=<ID=LRR,Number=1,Type=Float,Description=\"Log R Ratio\">");
+    }
+    if (flags & FORMAT_LRR) {
+        bcf_hdr_append(hdr, "##FORMAT=<ID=LRR,Number=1,Type=Float,Description=\"Log R Ratio\">");
+    }
     if ((flags & BPM_LOADED) | (flags & GENOME_STUDIO)) {
         if (flags & FORMAT_NORMX)
             bcf_hdr_append(hdr,
@@ -2475,21 +2479,25 @@ static void gtcs_to_vcf(faidx_t *fai, const bpm_t *bpm, const egt_t *egt, gtc_t 
                                  gtc[i]->sin_theta[norm_id], xform->shear, xform->scale_x, xform->scale_y,
                                  &norm_x_arr[i], &norm_y_arr[i]);
                 norm_x_y2ilmn_theta_r(norm_x_arr[i], norm_y_arr[i], &ilmn_theta_arr[i], &ilmn_r_arr[i]);
-                if (cluster_record)
+                if (flags & USE_ORIGINAL_BAF_LRR) {
+                    get_element(gtc[i]->b_allele_freqs, (void *)&baf_arr[i], j);
+                    get_element(gtc[i]->logr_ratios, (void *)&lrr_arr[i], j);
+                } else if (cluster_record) {
                     get_baf_lrr(ilmn_theta_arr[i], ilmn_r_arr[i], cluster_record->aa_cluster_stats.theta_mean,
                                 cluster_record->ab_cluster_stats.theta_mean,
                                 cluster_record->bb_cluster_stats.theta_mean, cluster_record->aa_cluster_stats.r_mean,
                                 cluster_record->ab_cluster_stats.r_mean, cluster_record->bb_cluster_stats.r_mean,
                                 locus_entry->intensity_only ? cluster_record->r_mean : NAN, &baf_arr[i], &lrr_arr[i]);
+                }
             }
             if (isnan(baf_arr[i])) get_element(gtc[i]->b_allele_freqs, (void *)&baf_arr[i], j);
             if (isnan(lrr_arr[i])) get_element(gtc[i]->logr_ratios, (void *)&lrr_arr[i], j);
         }
 
-        if ((flags & ADJUST_CLUSTERS) && norm_id >= 0 && cluster_record && !bpm->locus_entries[j].intensity_only) {
+        if ((flags & ADJUST_CLUSTERS) && !(flags & USE_ORIGINAL_BAF_LRR) && norm_id >= 0 && cluster_record && !bpm->locus_entries[j].intensity_only) {
             adjust_clusters(gts, ilmn_theta_arr, ilmn_r_arr, n, cluster_record);
             for (int i = 0; i < n; i++) {
-                if (!isnan(ilmn_theta_arr[i]) && !isnan(ilmn_r_arr[i]))
+                if (!(flags & USE_ORIGINAL_BAF_LRR) && !isnan(ilmn_theta_arr[i]) && !isnan(ilmn_r_arr[i]))
                     get_baf_lrr(ilmn_theta_arr[i], ilmn_r_arr[i], cluster_record->aa_cluster_stats.theta_mean,
                                 cluster_record->ab_cluster_stats.theta_mean,
                                 cluster_record->bb_cluster_stats.theta_mean, cluster_record->aa_cluster_stats.r_mean,
@@ -3264,6 +3272,7 @@ int run(int argc, char *argv[]) {
                                        {"fasta-flank", no_argument, NULL, 11},
                                        {"sam-flank", required_argument, NULL, 's'},
                                        {"genome-build", required_argument, NULL, 12},
+                                       {"use-original-baf-lrr", no_argument, NULL, 13},
                                        {NULL, 0, NULL, 0}};
     int c;
     while ((c = getopt_long(argc, argv, "h?lt:b:c:e:f:g:io:O:x:vs:", loptions, NULL)) >= 0) {
@@ -3307,6 +3316,7 @@ int run(int argc, char *argv[]) {
             break;
         case 4:
             flags |= ADJUST_CLUSTERS;
+            fprintf(stderr, "Warning: Adjust clusters enabled\n");
             break;
         case 5:
             gtc_sample_names = 1;
@@ -3372,6 +3382,10 @@ int run(int argc, char *argv[]) {
             break;
         case 12:
             genome_build = optarg;
+            break;
+        case 13:
+            flags|=USE_ORIGINAL_BAF_LRR;
+            fprintf(stderr, "Warning: original BAF and LRR will be printed into output VCF\n");
             break;
         case 'h':
         case '?':
